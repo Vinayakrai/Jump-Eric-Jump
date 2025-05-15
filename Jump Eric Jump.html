@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zig‑Zag Jump Game – Sunset, Green Hero & Confetti!</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    #info {
+      position: absolute; top: 10px; width: 100%;
+      text-align: center; color: #fff;
+      font-family: Arial; font-size: 18px;
+      text-shadow: 0 0 5px #000;
+      pointer-events: none;
+    }
+    #winOverlay {
+      position: absolute; top:0; left:0;
+      width:100%; height:100%;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center; justify-content: center;
+      flex-direction: column; color: #ffeb3b;
+      font-family: Arial; text-align: center; z-index: 10;
+    }
+    #winOverlay button {
+      margin-top: 20px; padding: 10px 20px;
+      font-size: 18px; background: #4caf50;
+      border: none; color: white; cursor: pointer;
+      border-radius: 4px;
+    }
+    #winOverlay button:hover { background: #43a047; }
+  </style>
+</head>
+<body>
+  <div id="info">← ↑ → : Left / Forward / Right. One mid‑air jump allowed!</div>
+  <div id="winOverlay">
+    <div id="winText">You nailed the jump! 🕺💚</div>
+    <button id="playAgain">Play Again</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.142.0/build/three.min.js"></script>
+  <script>
+  // Global constants
+  const extension = 100;             // how far buildings extend downward
+  const legHeight = 1.2, halfLeg = legHeight/2;
+  const MAX_JUMPS = 2;
+  const gravity = -20, jumpSpeed = 10;
+  const forwardDist = 15, lateralDist = 5;
+  const danceDuration = 2000;        // ms
+  const confettiRate = 50;           // pieces per second
+
+  let scene, camera, renderer;
+  let player, velocity, jumpCount = 0;
+  let forwardVel, lateralVel;
+  let platforms = [];
+  let state = 'playing', stateStart = 0;
+  let confettis = [], confettiAccumulator = 0;
+  let clock = new THREE.Clock();
+
+  init();
+  animate();
+
+  function init() {
+    // Scene, camera, renderer
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xff8c69);
+    scene.fog = new THREE.Fog(0xff8c69, 50, 250);
+
+    camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 1000);
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    scene.add(new THREE.HemisphereLight(0xffe0b2, 0x222233, 1.0));
+    const sun = new THREE.DirectionalLight(0xffaa66, 1.2);
+    sun.position.set(-30, 50, 30);
+    scene.add(sun);
+
+    // Materials
+    const matBuilding = new THREE.MeshStandardMaterial({ color:0xe07a5f, roughness:0.8 });
+    const matPlank    = new THREE.MeshStandardMaterial({ color:0x2a9d8f, side:THREE.DoubleSide });
+    const matStick    = new THREE.MeshStandardMaterial({ color:0x00ff00 });
+    const cityMats    = [
+      new THREE.MeshStandardMaterial({ color:0xe76f51 }),
+      new THREE.MeshStandardMaterial({ color:0xf4a261 }),
+      new THREE.MeshStandardMaterial({ color:0xe9c46a }),
+      new THREE.MeshStandardMaterial({ color:0x264653 })
+    ];
+
+    // Helper: register landing surfaces
+    function addPlat(mesh, isGoal=false) {
+      const h2 = mesh.geometry.parameters.height/2;
+      platforms.push({
+        mesh,
+        x: mesh.position.x,
+        z: mesh.position.z,
+        topY: mesh.position.y + h2,
+        halfW: mesh.geometry.parameters.width/2,
+        halfD: mesh.geometry.parameters.depth/2,
+        isGoal
+      });
+    }
+
+    // Start platform
+    const bW=12, bH=2, bD=12;
+    const startB = new THREE.Mesh(new THREE.BoxGeometry(bW,bH,bD), matBuilding);
+    startB.position.set(0, bH/2, 0);
+    scene.add(startB);
+    addPlat(startB);
+
+    // Zig‑zag planks
+    const plankW=8, plankH=0.5, plankD=3;
+    const path = [
+      {x:15,z:0},{x:15,z:5},
+      {x:30,z:5},{x:30,z:-5},
+      {x:45,z:-5},{x:45,z:0},
+      {x:60,z:0},{x:60,z:5},
+      {x:75,z:5},{x:75,z:-5},
+      {x:90,z:-5},{x:90,z:0}
+    ];
+    path.forEach(p=>{
+      const plank = new THREE.Mesh(
+        new THREE.BoxGeometry(plankW,plankH,plankD), matPlank
+      );
+      plank.position.set(p.x, bH + plankH/2, p.z);
+      scene.add(plank);
+      addPlat(plank);
+    });
+
+    // Goal platform
+    const goalX = path[path.length-1].x + forwardDist;
+    const goalB = new THREE.Mesh(new THREE.BoxGeometry(bW,bH,bD), matBuilding);
+    goalB.position.set(goalX, bH/2, 0);
+    scene.add(goalB);
+    addPlat(goalB, true);
+
+    // Cityscape – tall buildings extending downward
+    for (let i=0; i<200; i++) {
+      const w = 5 + Math.random()*10;
+      const d = 5 + Math.random()*10;
+      const h = 10 + Math.random()*50;
+      const bx = Math.random()*200 - 20;
+      const bz = (Math.random()>0.5?1:-1)*(15 + Math.random()*50);
+      const fullH = h + extension;
+      const geom = new THREE.BoxGeometry(w, fullH, d);
+      const mat  = cityMats[Math.floor(Math.random()*cityMats.length)];
+      const bld  = new THREE.Mesh(geom, mat);
+      // position so top sits at y=h, bottom at y=-extension
+      bld.position.set(bx, (h - extension)/2, bz);
+      scene.add(bld);
+    }
+
+    // Player – green stick figure
+    player = createStickFigure(matStick);
+    player.scale.setScalar(0.5);
+    player.rotation.y = Math.PI/2; // face +X
+    scene.add(player);
+
+    // Compute jump velocities
+    const tFlight = 2*jumpSpeed / -gravity;
+    forwardVel = forwardDist / tFlight;
+    lateralVel = lateralDist / tFlight;
+
+    // Events
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onResize);
+    document.getElementById('playAgain').addEventListener('click', resetGame);
+
+    resetPlayer();
+  }
+
+  function createStickFigure(mat) {
+    const g = new THREE.Group();
+    // legs
+    const legGeo = new THREE.CylinderGeometry(0.1,0.1,legHeight,8);
+    legGeo.translate(0,halfLeg,0);
+    const lleg = new THREE.Mesh(legGeo, mat); lleg.name='lleg';
+    const rleg = lleg.clone();            rleg.name='rleg';
+    lleg.position.x = -0.2; rleg.position.x = 0.2;
+    g.add(lleg, rleg);
+    // body
+    const bodyGeo = new THREE.CylinderGeometry(0.1,0.1,1.6,8);
+    bodyGeo.translate(0, halfLeg+0.8, 0);
+    g.add(new THREE.Mesh(bodyGeo, mat));
+    // arms
+    const armGeo = new THREE.BoxGeometry(1.2,0.1,0.1);
+    const arms   = new THREE.Mesh(armGeo, mat);
+    arms.name = 'arms';
+    arms.position.y = halfLeg+1.6;
+    g.add(arms);
+    // head
+    const headGeo = new THREE.SphereGeometry(0.3,12,12);
+    headGeo.translate(0, halfLeg+2.1, 0);
+    g.add(new THREE.Mesh(headGeo, mat));
+    return g;
+  }
+
+  function resetPlayer() {
+    const start = platforms[0];
+    player.position.set(start.x, start.topY, start.z);
+    player.rotation.y = Math.PI/2;
+    ['arms','lleg','rleg'].forEach(name=>{
+      player.getObjectByName(name).rotation.set(0,0,0);
+    });
+    velocity = new THREE.Vector3();
+    jumpCount = 0;
+    state = 'playing';
+    confettis.forEach(c=>scene.remove(c.mesh));
+    confettis = [];
+    confettiAccumulator = 0;
+    document.getElementById('winOverlay').style.display = 'none';
+  }
+
+  function onKeyDown(e) {
+    if (state !== 'playing') return;
+    let vx=0, vz=0;
+    if (e.key==='ArrowUp')      vx = forwardVel;
+    else if (e.key==='ArrowLeft')  vz = -lateralVel;
+    else if (e.key==='ArrowRight') vz = lateralVel;
+    else return;
+    if (jumpCount < MAX_JUMPS) {
+      velocity.set(vx, jumpSpeed, vz);
+      jumpCount++;
+    }
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(0.05, clock.getDelta());
+    const now = performance.now();
+
+    if (state==='playing' && jumpCount>0) {
+      // Predict landing
+      const vyNew = velocity.y + gravity*dt;
+      const nextY = player.position.y + vyNew*dt;
+      let landed = false;
+      if (vyNew < 0) {
+        for (let p of platforms) {
+          const dx = Math.abs(player.position.x - p.x);
+          const dz = Math.abs(player.position.z - p.z);
+          if (dx < p.halfW && dz < p.halfD &&
+              player.position.y >= p.topY && nextY <= p.topY) {
+            // Land
+            player.position.set(p.x, p.topY, p.z);
+            velocity.set(0,0,0);
+            jumpCount = 0;
+            landed = true;
+            if (p.isGoal) startDance();
+            break;
+          }
+        }
+      }
+      if (!landed) {
+        velocity.y = vyNew;
+        player.position.addScaledVector(velocity, dt);
+        if (player.position.y < -extension) resetPlayer();
+      }
+    }
+    else if (state==='dancing') {
+      const t = now - stateStart;
+      // Arms & legs swing
+      const arms = player.getObjectByName('arms');
+      arms.rotation.z = Math.sin(t*0.01)*1.2;
+      const swingLeg = Math.sin(t*0.008)*0.5;
+      player.getObjectByName('lleg').rotation.z =  swingLeg;
+      player.getObjectByName('rleg').rotation.z = -swingLeg;
+      player.rotation.y = Math.PI/2 + Math.sin(t*0.002)*0.3;
+
+      // Continuous confetti spawn
+      confettiAccumulator += confettiRate * dt;
+      const count = Math.floor(confettiAccumulator);
+      confettiAccumulator -= count;
+      for (let i=0; i<count; i++) spawnConfetto();
+
+      if (t > danceDuration) {
+        state = 'ended';
+        document.getElementById('winOverlay').style.display = 'flex';
+      }
+    }
+    else if (state==='playing') {
+      // Idle bob
+      player.position.y += Math.sin(clock.elapsedTime*4)*0.1 * dt;
+    }
+
+    // Animate confetti falling
+    confettis.forEach(c=>{
+      c.velocity.y += gravity*dt*0.5;
+      c.mesh.position.addScaledVector(c.velocity, dt);
+      c.mesh.rotation.x += c.spin.x*dt;
+      c.mesh.rotation.y += c.spin.y*dt;
+    });
+
+    // Camera: just below player, looking up
+    const behind = new THREE.Vector3(-6,1,0);
+    camera.position.lerp(player.position.clone().add(behind), 0.1);
+    camera.lookAt(player.position.clone().add(new THREE.Vector3(30,4,0)));
+
+    renderer.render(scene, camera);
+  }
+
+  function startDance() {
+    state = 'dancing';
+    stateStart = performance.now();
+    velocity.set(0,0,0);
+  }
+
+  function spawnConfetto() {
+    const geo = new THREE.PlaneGeometry(0.2,0.1);
+    const mat = new THREE.MeshStandardMaterial({
+      color: Math.random()>0.5?0xFFD700:0xC0C0C0,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(
+      player.position.x + (Math.random()*10-5),
+      player.position.y + 5 + Math.random()*5,
+      player.position.z + (Math.random()*10-5)
+    );
+    mesh.rotation.set(
+      Math.random()*Math.PI,
+      Math.random()*Math.PI, 0
+    );
+    scene.add(mesh);
+    confettis.push({
+      mesh,
+      velocity: new THREE.Vector3(0, - (2+Math.random()*3), 0),
+      spin: new THREE.Vector3(Math.random()*2, Math.random()*2, 0)
+    });
+  }
+
+  function resetGame() {
+    resetPlayer();
+  }
+
+  function onResize() {
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  }
+  </script>
+</body>
+</html>
