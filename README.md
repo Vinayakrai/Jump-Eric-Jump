@@ -84,6 +84,13 @@ An energetic **3D jumping game** built with **Three.js**, where a vibrant green 
 
 ---
 
+# Preview
+
+![image](https://github.com/user-attachments/assets/a970cc52-68b7-44dd-b318-85a665979a87)
+![image](https://github.com/user-attachments/assets/4501619f-b769-4539-87f2-8089f2472105)
+
+---
+
 ## 🧑‍💻 Author
 
 Built with creativity and physics by **Vinayak Rai**  
